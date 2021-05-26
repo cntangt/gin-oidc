@@ -1,29 +1,30 @@
 package gin_oidc
 
 import (
-	"github.com/gin-gonic/gin"
-	"log"
-	"time"
-	"math/rand"
-	"github.com/gin-contrib/sessions"
 	"context"
-	"github.com/coreos/go-oidc"
-	"golang.org/x/oauth2"
+	"encoding/json"
 	"errors"
+	"log"
+	"math/rand"
 	"net/http"
 	"net/url"
-	"encoding/json"
+	"time"
+
+	"github.com/coreos/go-oidc"
+	"github.com/gin-contrib/sessions"
+	"github.com/gin-gonic/gin"
+	"golang.org/x/oauth2"
 )
 
 type InitParams struct {
 	Router        *gin.Engine     //gin router (used to set handler for OIDC)
 	ClientId      string          //id from the authorization service (OIDC provider)
 	ClientSecret  string          //secret from the authorization service (OIDC provider)
-	Issuer        url.URL         //the URL identifier for the authorization service. for example: "https://accounts.google.com" - try adding "/.well-known/openid-configuration" to the path to make sure it's correct
-	ClientUrl     url.URL         //your website's/service's URL for example: "http://localhost:8081/" or "https://mydomain.com/
+	Issuer        string          //the URL identifier for the authorization service. for example: "https://accounts.google.com" - try adding "/.well-known/openid-configuration" to the path to make sure it's correct
+	ClientUrl     string          //your website's/service's URL for example: "http://localhost:8081/" or "https://mydomain.com/
 	Scopes        []string        //OAuth scopes. If you're unsure go with: []string{oidc.ScopeOpenID, "profile", "email"}
 	ErrorHandler  gin.HandlerFunc //errors handler. for example: func(c *gin.Context) {c.String(http.StatusBadRequest, "ERROR...")}
-	PostLogoutUrl url.URL         //user will be redirected to this URL after he logs out (i.e. accesses the '/logout' endpoint added in 'Init()')
+	PostLogoutUrl string          //user will be redirected to this URL after he logs out (i.e. accesses the '/logout' endpoint added in 'Init()')
 }
 
 func Init(i InitParams) gin.HandlerFunc {
@@ -38,7 +39,7 @@ func Init(i InitParams) gin.HandlerFunc {
 
 func initVerifierAndConfig(i InitParams) (*oidc.IDTokenVerifier, *oauth2.Config) {
 	providerCtx := context.Background()
-	provider, err := oidc.NewProvider(providerCtx, i.Issuer.String())
+	provider, err := oidc.NewProvider(providerCtx, i.Issuer)
 	if err != nil {
 		log.Fatalf("Failed to init OIDC provider. Error: %v \n", err.Error())
 	}
@@ -47,12 +48,11 @@ func initVerifierAndConfig(i InitParams) (*oidc.IDTokenVerifier, *oauth2.Config)
 	}
 	verifier := provider.Verifier(oidcConfig)
 	endpoint := provider.Endpoint()
-	i.ClientUrl.Path = "oidc-callback"
 	config := &oauth2.Config{
 		ClientID:     i.ClientId,
 		ClientSecret: i.ClientSecret,
 		Endpoint:     endpoint,
-		RedirectURL:  i.ClientUrl.String(),
+		RedirectURL:  i.ClientUrl + "/oidc-callback",
 		Scopes:       i.Scopes,
 	}
 	return verifier, config
@@ -66,8 +66,8 @@ func logoutHandler(i InitParams) func(c *gin.Context) {
 		serverSession.Set("oidcState", nil)
 		serverSession.Set("oidcOriginalRequestUrl", nil)
 		serverSession.Save()
-		logoutUrl := i.Issuer
-		logoutUrl.RawQuery = (url.Values{"redirect_uri": []string{i.PostLogoutUrl.String()}}).Encode()
+		logoutUrl, _ := url.Parse(i.Issuer)
+		logoutUrl.RawQuery = (url.Values{"redirect_uri": []string{i.PostLogoutUrl}}).Encode()
 		logoutUrl.Path = "protocol/openid-connect/logout"
 		c.Redirect(http.StatusFound, logoutUrl.String())
 	}
@@ -137,7 +137,7 @@ func protectMiddleware(config *oauth2.Config) func(c *gin.Context) {
 		serverSession := sessions.Default(c)
 		authorized := serverSession.Get("oidcAuthorized")
 		if (authorized != nil && authorized.(bool)) ||
-			c.Request.URL.Path ==  "oidc-callback" {
+			c.Request.URL.Path == "oidc-callback" {
 			c.Next()
 			return
 		}
