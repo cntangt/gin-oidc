@@ -1,4 +1,4 @@
-module gin-oidc
+module github.com/cntangt/gin-oidc
 
 go 1.16
 
