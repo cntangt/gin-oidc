@@ -114,7 +114,8 @@ func callbackHandler(i InitParams, verifier *oidc.IDTokenVerifier, config *oauth
 
 		cookie := base64.RawStdEncoding.EncodeToString(encrypted)
 
-		c.SetCookie(i.CookieName, cookie, int(time.Until(oauth2Token.Expiry)*time.Second), "", "", true, true)
+		age := time.Until(oauth2Token.Expiry).Seconds()
+		c.SetCookie(i.CookieName, cookie, int(age), "", "", true, true)
 		c.SetCookie(OIDCORIGINALREQUESTURL, "", -1, "", "", true, true)
 
 		c.Redirect(http.StatusFound, oidcOriginalRequestUrl)
