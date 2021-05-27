@@ -115,7 +115,7 @@ func callbackHandler(i InitParams, verifier *oidc.IDTokenVerifier, config *oauth
 		cookie := base64.RawStdEncoding.EncodeToString(encrypted)
 
 		c.SetCookie(i.CookieName, cookie, int(time.Until(oauth2Token.Expiry)*time.Second), "", "", true, true)
-		c.SetCookie(oidcOriginalRequestUrl, "", -1, "", "", true, true)
+		c.SetCookie(OIDCORIGINALREQUESTURL, "", -1, "", "", true, true)
 
 		c.Redirect(http.StatusFound, oidcOriginalRequestUrl)
 	}
@@ -142,7 +142,11 @@ func protectMiddleware(config *oauth2.Config, i InitParams) func(c *gin.Context)
 		}
 
 		state := RandomString(16)
-		c.SetCookie(OIDCORIGINALREQUESTURL, c.Request.URL.String(), 3600, "", "", true, true)
+		oidcOriginalRequestUrl := c.Request.URL.String()
+		if len(oidcOriginalRequestUrl) == 0 {
+			oidcOriginalRequestUrl = "/"
+		}
+		c.SetCookie(OIDCORIGINALREQUESTURL, oidcOriginalRequestUrl, 3600, "", "", true, true)
 		c.Redirect(http.StatusFound, config.AuthCodeURL(state)) //redirect to authorization server
 	}
 
