@@ -29,6 +29,8 @@ type InitParams struct {
 	AesKey        []byte
 }
 
+const OIDCORIGINALREQUESTURL = "___oidcOriginalRequestUrl___"
+
 func Init(i InitParams) gin.HandlerFunc {
 	verifier, config := initVerifierAndConfig(i)
 
@@ -100,7 +102,7 @@ func callbackHandler(i InitParams, verifier *oidc.IDTokenVerifier, config *oauth
 			return
 		}
 
-		oidcOriginalRequestUrl, err := c.Cookie("oidcOriginalRequestUrl")
+		oidcOriginalRequestUrl, err := c.Cookie(OIDCORIGINALREQUESTURL)
 		if handleError(c, i, err, "failed to parse originalRequestUrl") {
 			return
 		}
@@ -113,6 +115,7 @@ func callbackHandler(i InitParams, verifier *oidc.IDTokenVerifier, config *oauth
 		cookie := base64.RawStdEncoding.EncodeToString(encrypted)
 
 		c.SetCookie(i.CookieName, cookie, int(time.Until(oauth2Token.Expiry)*time.Second), "", "", true, true)
+		c.SetCookie(oidcOriginalRequestUrl, "", 0, "", "", true, true)
 
 		c.Redirect(http.StatusFound, oidcOriginalRequestUrl)
 	}
@@ -139,6 +142,7 @@ func protectMiddleware(config *oauth2.Config, i InitParams) func(c *gin.Context)
 		}
 
 		state := RandomString(16)
+		c.SetCookie(OIDCORIGINALREQUESTURL, c.Request.URL.String(), 3600, "", "", true, true)
 		c.Redirect(http.StatusFound, config.AuthCodeURL(state)) //redirect to authorization server
 	}
 
