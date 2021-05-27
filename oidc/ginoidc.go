@@ -1,7 +1,8 @@
-package ginoidc
+package oidc
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"log"
@@ -11,7 +12,6 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc"
-	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/oauth2"
 )
@@ -25,6 +25,8 @@ type InitParams struct {
 	Scopes        []string        //OAuth scopes. If you're unsure go with: []string{oidc.ScopeOpenID, "profile", "email"}
 	ErrorHandler  gin.HandlerFunc //errors handler. for example: func(c *gin.Context) {c.String(http.StatusBadRequest, "ERROR...")}
 	PostLogoutUrl string          //user will be redirected to this URL after he logs out (i.e. accesses the '/logout' endpoint added in 'Init()')
+	CookieName    string          // OIDC Cookie Name
+	AesKey        []byte
 }
 
 func Init(i InitParams) gin.HandlerFunc {
@@ -34,7 +36,7 @@ func Init(i InitParams) gin.HandlerFunc {
 
 	i.Router.Any("/oidc-callback", callbackHandler(i, verifier, config))
 
-	return protectMiddleware(config)
+	return protectMiddleware(config, i)
 }
 
 func initVerifierAndConfig(i InitParams) (*oidc.IDTokenVerifier, *oauth2.Config) {
@@ -60,12 +62,7 @@ func initVerifierAndConfig(i InitParams) (*oidc.IDTokenVerifier, *oauth2.Config)
 
 func logoutHandler(i InitParams) func(c *gin.Context) {
 	return func(c *gin.Context) {
-		serverSession := sessions.Default(c)
-		serverSession.Set("oidcAuthorized", false)
-		serverSession.Set("oidcClaims", nil)
-		serverSession.Set("oidcState", nil)
-		serverSession.Set("oidcOriginalRequestUrl", nil)
-		serverSession.Save()
+		c.SetCookie(i.CookieName, "", 0, "", "", c.Request.TLS != nil, true)
 		logoutUrl, _ := url.Parse(i.Issuer)
 		logoutUrl.RawQuery = (url.Values{"redirect_uri": []string{i.PostLogoutUrl}}).Encode()
 		logoutUrl.Path = "protocol/openid-connect/logout"
@@ -76,16 +73,6 @@ func logoutHandler(i InitParams) func(c *gin.Context) {
 func callbackHandler(i InitParams, verifier *oidc.IDTokenVerifier, config *oauth2.Config) func(c *gin.Context) {
 	return func(c *gin.Context) {
 		ctx := c.Request.Context()
-		serverSession := sessions.Default(c)
-
-		state, ok := (serverSession.Get("oidcState")).(string)
-		if handleOk(c, i, ok, "failed to parse state") {
-			return
-		}
-
-		if handleOk(c, i, c.Query("state") == state, "get 'state' param didn't match local 'state' value") {
-			return
-		}
 
 		oauth2Token, err := config.Exchange(ctx, c.Query("code"))
 		if handleError(c, i, err, "failed to exchange token") {
@@ -113,42 +100,45 @@ func callbackHandler(i InitParams, verifier *oidc.IDTokenVerifier, config *oauth
 			return
 		}
 
-		originalRequestUrl, ok := (serverSession.Get("oidcOriginalRequestUrl")).(string)
-		if handleOk(c, i, ok, "failed to parse originalRequestUrl") {
+		oidcOriginalRequestUrl, err := c.Cookie("oidcOriginalRequestUrl")
+		if handleError(c, i, err, "failed to parse originalRequestUrl") {
 			return
 		}
 
-		serverSession.Set("oidcAuthorized", true)
-		serverSession.Set("oidcState", nil)
-		serverSession.Set("oidcOriginalRequestUrl", nil)
-		serverSession.Set("oidcClaims", string(claimsJson))
-
-		err = serverSession.Save()
+		encrypted, err := AesEncrypt(claimsJson, i.AesKey)
 		if handleError(c, i, err, "failed save sessions.") {
 			return
 		}
 
-		c.Redirect(http.StatusFound, originalRequestUrl)
+		cookie := base64.RawStdEncoding.EncodeToString(encrypted)
+
+		c.SetCookie(i.CookieName, cookie, int(time.Until(oauth2Token.Expiry)*time.Second), "", "", true, true)
+
+		c.Redirect(http.StatusFound, oidcOriginalRequestUrl)
 	}
 }
 
-func protectMiddleware(config *oauth2.Config) func(c *gin.Context) {
+func protectMiddleware(config *oauth2.Config, i InitParams) func(c *gin.Context) {
 	return func(c *gin.Context) {
-		serverSession := sessions.Default(c)
-		authorized := serverSession.Get("oidcAuthorized")
-		if (authorized != nil && authorized.(bool)) ||
-			c.Request.URL.Path == "oidc-callback" {
+		if c.Request.URL.Path == "oidc-callback" {
 			c.Next()
 			return
 		}
-		state := RandomString(16)
-		serverSession.Set("oidcAuthorized", false)
-		serverSession.Set("oidcState", state)
-		serverSession.Set("oidcOriginalRequestUrl", c.Request.URL.String())
-		err := serverSession.Save()
-		if err != nil {
-			log.Fatal("failed save sessions. error: " + err.Error()) // todo handle more gracefully
+		cookie, _ := c.Cookie(i.CookieName)
+		if len(cookie) > 0 {
+			encrypted, err := base64.StdEncoding.DecodeString(cookie)
+			if err == nil {
+				decrypted, err := AesDecrypt(encrypted, i.AesKey)
+				if err == nil {
+					var claims map[string]interface{}
+					json.Unmarshal(decrypted, &claims)
+					c.Next()
+					return
+				}
+			}
 		}
+
+		state := RandomString(16)
 		c.Redirect(http.StatusFound, config.AuthCodeURL(state)) //redirect to authorization server
 	}
 
@@ -171,9 +161,6 @@ func handleOk(c *gin.Context, i InitParams, ok bool, message string) bool {
 	return handleError(c, i, errors.New("not ok"), message)
 }
 
-//random string
-var src = rand.NewSource(time.Now().UnixNano())
-
 const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 const (
 	letterIdxBits = 6                    // 6 bits to represent a letter index
@@ -182,6 +169,7 @@ const (
 )
 
 func RandomString(n int) string {
+	src := rand.NewSource(time.Now().UnixNano())
 	b := make([]byte, n)
 	for i, cache, remain := n-1, src.Int63(), letterIdxMax; i >= 0; {
 		if remain == 0 {
