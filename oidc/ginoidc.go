@@ -107,7 +107,7 @@ func callbackHandler(i InitParams, verifier *oidc.IDTokenVerifier, config *oauth
 			return
 		}
 
-		encrypted, err := AesEncrypt(claimsJson, i.AesKey)
+		encrypted, err := aesEncrypt(claimsJson, i.AesKey)
 		if handleError(c, i, err, "failed save sessions.") {
 			return
 		}
@@ -115,7 +115,7 @@ func callbackHandler(i InitParams, verifier *oidc.IDTokenVerifier, config *oauth
 		cookie := base64.RawStdEncoding.EncodeToString(encrypted)
 
 		c.SetCookie(i.CookieName, cookie, int(time.Until(oauth2Token.Expiry)*time.Second), "", "", true, true)
-		c.SetCookie(oidcOriginalRequestUrl, "", 0, "", "", true, true)
+		c.SetCookie(oidcOriginalRequestUrl, "", -1, "", "", true, true)
 
 		c.Redirect(http.StatusFound, oidcOriginalRequestUrl)
 	}
@@ -129,9 +129,9 @@ func protectMiddleware(config *oauth2.Config, i InitParams) func(c *gin.Context)
 		}
 		cookie, _ := c.Cookie(i.CookieName)
 		if len(cookie) > 0 {
-			encrypted, err := base64.StdEncoding.DecodeString(cookie)
+			encrypted, err := base64.RawStdEncoding.DecodeString(cookie)
 			if err == nil {
-				decrypted, err := AesDecrypt(encrypted, i.AesKey)
+				decrypted, err := aesDecrypt(encrypted, i.AesKey)
 				if err == nil {
 					var claims map[string]interface{}
 					json.Unmarshal(decrypted, &claims)
